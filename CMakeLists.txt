@@ -1,86 +1,55 @@
-cmake_minimum_required (VERSION 2.8.3)
-project(opentonano)
+cmake_minimum_required(VERSION 3.15)
+project(vdb2nvdb_converter LANGUAGES CXX)
 
-if(APPLE)
-    set(CMAKE_MACOSX_RPATH ON)
-endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-include(CheckCXXCompilerFlag)
-include(CheckCXXSourceRuns)
+# 查找必需依赖
+list(APPEND CMAKE_MODULE_PATH /home/hqy/graphics/openvdb-11.0.0/cmake)
+find_package(OpenVDB REQUIRED COMPONENTS openvdb nanovdb)
+find_package(Blosc REQUIRED)
+find_package(TBB REQUIRED)
 
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  # Quench annoying deprecation warnings when compiling GLFW on OSX
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
-endif()
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|Intel)$")
-  CHECK_CXX_COMPILER_FLAG("-std=c++14" HAS_CPP14_FLAG)
-  CHECK_CXX_COMPILER_FLAG("-std=c++11" HAS_CPP11_FLAG)
-
-  if (HAS_CPP14_FLAG)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -pthread -O3")
-  elseif (HAS_CPP11_FLAG)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -O3")
-  else()
-    message(FATAL_ERROR "Unsupported compiler -- pybind11 requires C++11 support!")
-  endif()
-endif()
-
-IF(APPLE)
-    # Fix linking on 10.14+. See https://stackoverflow.com/questions/54068035
-    LINK_DIRECTORIES(/usr/local/lib)
-ENDIF()
-
-if (APPLE)
-  find_library(cocoa_library Cocoa)
-  find_library(opengl_library OpenGL)
-  find_library(corevideo_library CoreVideo)
-  find_library(iokit_library IOKit)
-  list(APPEND NANOGUI_EXTRA_LIBS ${cocoa_library} ${opengl_library} ${corevideo_library} ${iokit_library})
-  list(APPEND LIBNANOGUI_EXTRA_SOURCE src/darwin.mm)
- endif()
-
-# TODO: change this
-set(OPENVDB_INCLUDE_DIR
-   /usr/local/Cellar/openvdb/10.0.0/include/)
-
-# TODO: change this
-set(BOOST_INCLUDE_DIR
-   /usr/local/Cellar/boost/1.80.0/include/)
-
-# TODO: change this
-set(TBB_INCLUDE_DIR /usr/local/Cellar/tbb/2021.7.0/include/)
-
-include_directories(
-    # Include directory
-    ${BOOST_INCLUDE_DIR}
-    ${TBB_INCLUDE_DIR}
-    ${OPENVDB_INCLUDE_DIR}
+set(NANOVDB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/nanovdb" CACHE PATH "Path to NanoVDB headers")
+find_path(NANOVDB_INCLUDE_DIR
+    NAMES nanovdb/util/CreateNanoGrid.h
+    HINTS ${NANOVDB_ROOT}
+    PATH_SUFFIXES include
 )
 
-if(APPLE)
-    set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -flto -Wno-unused-result -fno-strict-aliasing")
-else()
-    set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -flto -Wno-unused-result -fno-strict-aliasing -Wlto-type-mismatch")
+if(NOT NANOVDB_INCLUDE_DIR)
+    message(FATAL_ERROR "NanoVDB headers not found. Please set NANOVDB_ROOT to NanoVDB installation path")
 endif()
 
-
-FILE ( GLOB OPENTONANO_SOURCE
-    src/*.cpp
-  )
-
-add_executable(opentonano
-    # source files
-    ${OPENTONANO_SOURCE}
+add_executable(vdb2nvdb
+    src/main.cpp
 )
 
-#OPENEXR_INCLUDE_DIRS
-set(CompilerFlags
-      CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
-      CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS
-      CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_MINSIZEREL
-      CMAKE_C_FLAGS_RELWITHDEBINFO COMPILE_DEFINITIONS U_CMAKE_BUILD_TYPE
-      CMAKE_MACOSX_RPATH
+target_include_directories(vdb2nvdb PRIVATE
+    ${NANOVDB_INCLUDE_DIR}
+    ${OpenVDB_INCLUDE_DIRS}
 )
 
-target_link_libraries(opentonano tbb openvdb)
+target_link_libraries(vdb2nvdb PRIVATE
+    OpenVDB::openvdb
+    TBB::tbb
+    Blosc::blosc
+    ${CMAKE_DL_LIBS}
+)
+
+set_target_properties(vdb2nvdb PROPERTIES
+    VERSION 1.0.0
+    SOVERSION 1
+)
+
+target_compile_definitions(vdb2nvdb
+    PRIVATE
+    NANOVDB_USE_OPENVDB
+)
+
+install(TARGETS vdb2nvdb
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)

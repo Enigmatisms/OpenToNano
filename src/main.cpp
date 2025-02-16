@@ -1,67 +1,116 @@
-#include <nanovdb/util/OpenToNanoVDB.h> // converter from OpenVDB to NanoVDB (includes NanoVDB.h and GridManager.h)
-#include <nanovdb/util/IO.h>
-#include <openvdb/openvdb.h>
 #include <iostream>
-#include <string>
+#include <fstream>
+#include <stdexcept> // 包含标准异常处理
 
-int main(int argc, char *argv[])
+#include <openvdb/openvdb.h>
+#include <nanovdb/util/CreateNanoGrid.h>
+
+void readWorldSpaceBoundingBox(openvdb::GridBase::Ptr grid) {
+    const openvdb::math::Transform& transform = grid->transform();
+
+    openvdb::CoordBBox localBBox = grid->evalActiveVoxelBoundingBox();
+
+    auto worldBBox = transform.indexToWorld(localBBox);
+
+    std::cout << "World Space Bounding Box: "
+              << "min = " << worldBBox.min() << ", "
+              << "max = " << worldBBox.max() << std::endl;
+}
+
+void rotateVolume(openvdb::GridBase::Ptr grid, float angleDegrees) {
+    float angleRadians = angleDegrees * (3.14159265359f / 180.0f);
+
+    openvdb::math::Mat3s rotationMatrix;
+    auto rot_axis = openvdb::math::Vec3d(0, 0, 1);
+    openvdb::math::Transform::Ptr transform = grid->transformPtr();
+    transform->postRotate(angleRadians, openvdb::math::Z_AXIS);
+    printf("Rotated by %f deg.\n", angleDegrees);
+}
+
+void translateVolume(openvdb::GridBase::Ptr grid, float x, float y, float z) {
+    openvdb::math::Mat3s rotationMatrix;
+    openvdb::math::Transform::Ptr transform = grid->transformPtr();
+    transform->postTranslate(openvdb::math::Vec3d(x, y, z));
+    printf("Translate by %f, %f, %f.\n", x, y, z);
+}
+
+int main(int argc, char** argv)
 {
-    if (argc != 3)
-    {
-        std::cout << "This program expects the following format: ./opentonano path_to_open.vdb path_to_output_nano.nvdb" << std::endl;
-        return 1;
-    }
+    try {
+        if (argc < 3) {
+            std::cerr << "Usage: " << argv[0] << " <input.vdb> <output.nvdb>\n";
+            return 1;
+        }
 
-    std::string input = std::string(argv[1]);
-    std::string output = std::string(argv[2]);
-
-    try
-    {
-        std::cout << "converting " << input << " to nanovdb format and writing to " << output << std::endl;
+        std::string field_name = "density";
+        if (argc >= 4) {
+            field_name = argv[3];
+        }
 
         openvdb::initialize();
-        // Create a VDB file object.
-        openvdb::io::File file(input);
-        // Open the file.  This reads the file header, but not any grids.
-        file.open();
-        // Loop over all grids in the file and retrieve a shared pointer
-        // to the one named "density".  (This can also be done
-        // more simply by calling file.readGrid("density").)
-        openvdb::GridBase::Ptr baseGrid;
-        for (openvdb::io::File::NameIterator nameIter = file.beginName();
-             nameIter != file.endName(); ++nameIter)
-        {
-            // Read in only the grid we are interested in.
-            if (nameIter.gridName() == "density")
-            {
-                baseGrid = file.readGrid(nameIter.gridName());
+        openvdb::io::File file(argv[1]);
+        if (!file.open()) {
+            throw std::runtime_error("Failed to open VDB file");
+        }
+
+        openvdb::GridPtrVecPtr grids = file.getGrids();
+        if (!grids || grids->empty()) {
+            throw std::runtime_error("No grids found in VDB file");
+        }
+
+        openvdb::FloatGrid::Ptr floatGrid = nullptr;
+        int cnt_grid = 0;
+        for (const auto& baseGrid : *grids) {
+            // std::cout << baseGrid->getName() << std::endl;
+            if (baseGrid->getName() == field_name) {
+                floatGrid = openvdb::gridPtrCast<openvdb::FloatGrid>(baseGrid);
+                std::cout << "Grid '" << field_name << "' found and converted.\n";
             }
-            else
-            {
-                std::cout << "skipping grid " << nameIter.gridName() << std::endl;
+            if (floatGrid) {
+                auto cast_grid = openvdb::gridPtrCast<openvdb::FloatGrid>(baseGrid);
+                if (cast_grid && cast_grid->getName() == "flame") {
+                    float v_min, v_max;
+                    cast_grid->evalMinMax(v_min, v_max);
+                    
+                }
             }
         }
-        file.close();
-        // From the example above, "density" is known to be a FloatGrid,
-        // so cast the generic grid pointer to a FloatGrid pointer.
-        openvdb::FloatGrid::Ptr grid = openvdb::gridPtrCast<openvdb::FloatGrid>(baseGrid);
 
-        // Convert the OpenVDB grid into a NanoVDB grid handle.
-        auto handle = nanovdb::openToNanoVDB(*grid);
-        // Define a (raw) pointer to the NanoVDB grid on the host. Note we match the value type of the srcGrid!
-        auto *dstGrid = handle.grid<float>();
-        if (!dstGrid)
-            throw std::runtime_error("GridHandle does not contain a grid with value type float");
+        float v_min, v_max;
+        if (floatGrid)
+            floatGrid->evalMinMax(v_min, v_max);
+        else {
+            std::cerr << "Float grid is nullptr. Exiting...\n";
+            exit(0);
+        }
+        printf("Value extrema: Min: %f, Max: %f\n", v_min, v_max);
+        readWorldSpaceBoundingBox(floatGrid);
 
-        nanovdb::io::writeGrid("data/" + output, handle); // Write the NanoVDB grid to file and throw if writing fails
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "An exception occurred: \"" << e.what() << "\"" << std::endl;
+        if (!floatGrid) {
+            throw std::runtime_error("No FloatGrid found in VDB file");
+        }
+
+        auto nanoHandle = nanovdb::openToNanoVDB(floatGrid,
+                                                 nanovdb::StatsMode::Default,
+                                                 nanovdb::ChecksumMode::Default, 0);
+
+        if (!nanoHandle) {
+            throw std::runtime_error("Failed to convert to NanoVDB format");
+        }
+
+        // 写入NVDB文件
+        std::ofstream outFile(argv[2], std::ios::binary);
+        if (!outFile) {
+            throw std::runtime_error("Failed to create output file");
+        }
+
+        outFile.write(reinterpret_cast<const char*>(nanoHandle.data()), nanoHandle.size());
+
+        std::cout << "Successfully converted to NanoVDB format\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
-
-    std::cout << "finished converting vdb into nvdb!" << std::endl;
 
     return 0;
 }
